@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "chronomoe"
+version = "0.1.0"
+description = "Temporal Governance and Topology Telemetry for Mixture-of-Experts"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [
+    { name = "HalcyonAI", email = "contact@halcyon.ai" }
+]
+keywords = ["moe", "mixture-of-experts", "telemetry", "machine-learning", "observability"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "numpy>=1.21.0",
+    "torch>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/HalcyonAIR/ChronoMoEv2"
+Repository = "https://github.com/HalcyonAIR/ChronoMoEv2"
+Issues = "https://github.com/HalcyonAIR/ChronoMoEv2/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["chronomoe"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
