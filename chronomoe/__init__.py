@@ -36,6 +36,13 @@ from .metrics import (
     compute_layer_metrics,
     compute_gini_coefficient,
 )
+from .probes import (
+    PathologyProbe,
+    PathologyConfig,
+    SeverityLevel,
+    ResilienceSurface,
+    compare_surfaces,
+)
 
 __all__ = [
     # Data structures
@@ -65,6 +72,12 @@ __all__ = [
     "compute_gini_coefficient",
     # Alerts
     "check_immediate_alerts",
+    # Probes (forced pathology testing)
+    "PathologyProbe",
+    "PathologyConfig",
+    "SeverityLevel",
+    "ResilienceSurface",
+    "compare_surfaces",
 ]
 
 __version__ = "0.2.0"
