@@ -1,16 +1,17 @@
 # chronomoe/lens.py
 """
-ChronoMoE Phase 1 Lens Skeleton
+ChronoMoE Lens Module
 
-Purpose:
-- Provide a stable interface for a "lens" that warps router input geometry.
-- Phase 1 behavior is strictly identity (no-op) unless explicitly enabled.
-- Phase 2+ will parameterize this lens using pressure/heat signals and basin drift.
+Phase 1: IdentityLens (no-op)
+Phase 2: ChronoLens with low-rank residual warp, pressure-gated
+
+The lens transforms router input geometry x → x' to influence routing
+decisions without modifying the router itself.
 
 Design constraints:
-- Must not change model outputs in Phase 1 by default.
-- Must be cheap: O(B*T*D) with minimal overhead.
-- Must be callable per-layer (layer_id provided).
+- Cheap: O(B*T*D) with minimal overhead
+- Per-layer: layer_id provided for layer-specific behavior
+- Gated: warp strength controlled by external scalar s
 """
 
 from __future__ import annotations
@@ -25,81 +26,126 @@ import torch.nn as nn
 @dataclass(frozen=True)
 class LensState:
     """
-    Minimal state object passed into the lens.
+    State object passed into the lens.
 
     Phase 1: mostly placeholders.
-    Phase 2+: will include pressure/heat/forgetting + per-layer health metrics.
+    Phase 2+: includes pressure/heat/forgetting from controller.
     """
     step: int
     mode: str  # "TRAIN" or "INFER"
 
-    # Optional scalar controls (Phase 2+)
+    # Control signals (from controller)
     pressure: float = 0.0
     heat: float = 0.0
     forgetting: float = 0.0
 
-    # Optional per-layer metrics (Phase 2+)
+    # Optional per-layer metrics
     layer_metrics: Optional[Dict[int, Dict[str, float]]] = None
 
-    # Freeform metadata (avoid logging huge payloads here)
+    # Freeform metadata
     meta: Optional[Dict[str, Any]] = None
 
 
 class ChronoLens(nn.Module):
     """
-    Identity-by-default lens module.
+    Low-rank residual warp for router input geometry.
+
+    x' = x + s * (x @ V) @ U
+
+    Where s is gated by pressure/heat from controller.
+
+    Args:
+        d_model: Hidden dimension of input
+        rank: Rank of low-rank warp (default 8)
+        layer_id: Layer index for logging/debugging
 
     Usage:
-        lens = ChronoLens(enabled=False)
-        x_lensed = lens(x, state, layer_id)
-
-    Parameters:
-        enabled: if False, returns x unchanged.
+        lens = ChronoLens(d_model=512, rank=8, layer_id=0)
+        lens.set_scale(0.02)  # Set by controller
+        x_warped = lens(x)
     """
 
-    def __init__(self, enabled: bool = False):
+    def __init__(self, d_model: int, rank: int = 8, layer_id: int = 0):
         super().__init__()
-        self.enabled = enabled
+        self.d_model = d_model
+        self.rank = rank
+        self.layer_id = layer_id
 
-        # Phase 1: no parameters.
-        # Phase 2+: add low-rank warp params, per-layer adapters, etc.
+        # Low-rank parameters
+        # Initialize very small so it's near-identity even with s>0
+        self.V = nn.Parameter(torch.randn(d_model, rank) * 1e-3)
+        self.U = nn.Parameter(torch.randn(rank, d_model) * 1e-3)
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        state: Optional[LensState],
-        layer_id: int
-    ) -> torch.Tensor:
+        # Gating scalar (set by controller, not a learned parameter)
+        self.register_buffer('_scale', torch.tensor(0.0))
+
+    @property
+    def s(self) -> float:
+        """Current gating scale."""
+        return self._scale.item()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
+        Apply lens warp.
+
         Args:
-            x: router input tensor, typically shape [B, T, D]
-               (or [T, B, D] depending on codebase).
-            state: LensState or None. Phase 1 can pass None safely.
-            layer_id: which transformer block / MoE layer this routing belongs to.
+            x: Router input tensor [B, T, D] or [T, B, D]
 
         Returns:
-            x' with same shape as x.
+            Warped tensor with same shape as x
         """
-        if not self.enabled:
-            return x
+        if self._scale.item() == 0.0:
+            return x  # No warp when disabled
 
-        # Phase 1 "enabled" still defaults to identity unless you explicitly
-        # implement something here. Keeping it identity avoids accidental drift.
+        # Low-rank residual: x + s * (x @ V) @ U
+        warp = torch.matmul(torch.matmul(x, self.V), self.U)
+        return x + self._scale * warp
+
+    def set_scale(self, s: float):
+        """
+        Update gating scalar from controller.
+
+        Args:
+            s: New scale value (typically 0 to lens_scale_max)
+        """
+        self._scale.fill_(s)
+
+    def get_norms(self) -> Dict[str, float]:
+        """Get parameter norms for logging."""
+        return {
+            'u_norm': self.U.norm().item(),
+            'v_norm': self.V.norm().item(),
+        }
+
+    def extra_repr(self) -> str:
+        return f'd_model={self.d_model}, rank={self.rank}, layer_id={self.layer_id}'
+
+
+class IdentityLens(nn.Module):
+    """
+    Explicit identity lens (always no-op).
+
+    Use for Phase 1 or as a drop-in replacement when you want to
+    disable lens warping entirely.
+    """
+
+    def __init__(self, layer_id: int = 0):
+        super().__init__()
+        self.layer_id = layer_id
+        self.rank = 0
+        self._scale = 0.0
+
+    @property
+    def s(self) -> float:
+        return 0.0
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x
 
+    def set_scale(self, s: float):
+        """No-op for identity lens."""
+        pass
 
-class IdentityLens(ChronoLens):
-    """
-    Explicit identity lens (always no-op). Useful as a clear default.
-    """
-
-    def __init__(self):
-        super().__init__(enabled=False)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        state: Optional[LensState],
-        layer_id: int
-    ) -> torch.Tensor:
-        return x
+    def get_norms(self) -> Dict[str, float]:
+        """Identity lens has no parameters."""
+        return {'u_norm': 0.0, 'v_norm': 0.0}

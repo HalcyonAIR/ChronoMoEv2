@@ -4,12 +4,15 @@ Temporal Governance and Topology Telemetry for Mixture-of-Experts models.
 
 ## Overview
 
-ChronoMoE provides observability infrastructure for MoE routing topology. It makes routing topology **observable, measurable, and regressible** - enabling detection of expert collapse before it causes irreversible training degradation.
+ChronoMoE provides observability and governance infrastructure for MoE routing topology. It makes routing topology **observable, measurable, and controllable** - enabling detection and prevention of expert collapse during training.
+
+**Phase 1**: Telemetry - observe and alert
+**Phase 2**: Governance - pressure controller, lens parameterization (current)
 
 ## Installation
 
 ```bash
-pip install chronomoe
+pip install git+https://github.com/HalcyonAIR/ChronoMoEv2.git
 ```
 
 Or install from source:
@@ -20,7 +23,7 @@ cd ChronoMoEv2
 pip install -e .
 ```
 
-## Quick Start
+## Quick Start (Phase 1 - Telemetry)
 
 ```python
 from chronomoe import RoutingEvent, SystemSnapshot, TelemetryWriter
@@ -57,6 +60,36 @@ if snapshot.alerts:
     print("WARNING:", snapshot.alerts)
 ```
 
+## Quick Start (Phase 2 - Governance)
+
+```python
+from chronomoe import ChronoLens
+from chronomoe.controller import Controller, ControlConfig
+
+# Initialize controller
+controller = Controller(
+    n_layers=4,
+    n_experts_per_layer=[8, 8, 8, 8],
+    config=ControlConfig(),
+)
+controller.initialize(run_id="my_run")
+
+# Create lenses for each MoE layer
+lenses = {
+    layer_id: ChronoLens(d_model=512, rank=8, layer_id=layer_id)
+    for layer_id in range(4)
+}
+
+# At each eval checkpoint:
+decisions = controller.update(snapshot, lenses)
+
+# Controller automatically:
+# 1. Computes topology debt from metrics
+# 2. Updates pressure/heat/forgetting signals
+# 3. Sets lens scale to gate geometry warp
+# 4. Logs all decisions to control_decisions.jsonl
+```
+
 ## Semantic Definitions
 
 ### token_count
@@ -81,6 +114,8 @@ This is a strict definition - we do NOT use a threshold like `share < 0.01`. For
 - **Neff** (effective experts): `exp(entropy)` - intuitive measure of "how many experts are really being used"
 - **Top2Share**: Sum of two largest utilization shares - early warning for binary collapse
 - **Entropy**: Shannon entropy over expert utilization shares
+- **Pressure**: EMA of topology debt - drives lens intervention
+- **Heat**: Exploration parameter, proportional to pressure
 
 ## Package Structure
 
@@ -91,26 +126,41 @@ chronomoe/
 ├── metrics.py       # Pure metric functions (deterministic)
 ├── snapshots.py     # SystemSnapshot, LayerSnapshot, alert logic
 ├── io.py            # JSONL writers, manifest generation
-├── lens.py          # Identity lens (Phase 2: geometry warping)
-└── controller/      # Phase 2+: pressure controller, lifecycle manager
+├── lens.py          # ChronoLens (low-rank warp), IdentityLens
+└── controller/
+    ├── state.py     # ControlState, ControlConfig
+    ├── policy.py    # Debt computation, state updates
+    ├── decisions.py # ControlDecision logging
+    └── hooks.py     # Controller integration class
 ```
+
+## Phase 2 Control Loop
+
+```
+observe → compute debt → update pressure → gate lens → observe
+   │                                           │
+   └───────────── closed loop ────────────────┘
+```
+
+The lens applies a low-rank residual warp: `x' = x + s * (x @ V) @ U`
+
+Where `s` (scale) is gated by pressure from the controller. When topology is healthy, `s ≈ 0` and the lens is near-identity. When collapse is detected, `s` increases to redistribute routing.
 
 ## Testing
 
 ```bash
-pytest tests/ -v
-```
-
-Or run directly:
-
-```bash
+# Run all tests
 python tests/test_phase1_regression.py
+python tests/test_phase2_controller.py
+
+# Or with pytest
+pytest tests/ -v
 ```
 
 ## Roadmap
 
-- **Phase 1** (current): Telemetry - observe and alert
-- **Phase 2**: Governance - pressure controller, lens parameterization
+- **Phase 1** ✅: Telemetry - observe and alert
+- **Phase 2** ✅: Governance - pressure controller, lens parameterization
 - **Phase 3**: Lifecycle - expert spawning/pruning, basin tracking
 
 ## License

@@ -2,19 +2,24 @@
 """
 ChronoMoE: Temporal Governance and Topology Telemetry for MoE
 
-This module provides observability infrastructure for Mixture-of-Experts
-routing topology. Phase 1 is pure instrumentation: log everything,
-compute metrics, raise alerts, but don't intervene.
+Phase 1: Telemetry - observe and alert
+Phase 2: Governance - pressure controller, lens parameterization
 
 Key Components:
 - RoutingEvent: Atomic log record per (step, layer) with actual dispatch
 - ExpertState: Rolling health tracking per expert
 - SystemSnapshot: Periodic summary with alerts (the regression contract)
 - TelemetryWriter: JSONL output handlers
+- ChronoLens: Low-rank geometry warp for router inputs (Phase 2)
+- Controller: Pressure-gated lens control (Phase 2)
 
-Usage:
+Usage (Phase 1):
     from chronomoe import RoutingEvent, SystemSnapshot, TelemetryWriter
     from chronomoe.metrics import compute_entropy, compute_n_effective
+
+Usage (Phase 2):
+    from chronomoe import ChronoLens
+    from chronomoe.controller import Controller, ControlConfig
 """
 
 from .events import RoutingEvent, ExpertState
@@ -62,4 +67,4 @@ __all__ = [
     "check_immediate_alerts",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
