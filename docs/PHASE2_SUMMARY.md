@@ -159,9 +159,50 @@ Until then, Phase 2 remains the validated protective envelope:
 
 ---
 
+## Capacity Stress Validation (2026-02-03)
+
+**Status:** Protective envelope validated under realistic stress
+
+### Experiment: Domain Shift + Capacity Stress
+
+- Pre-train on Shakespeare with top_k=2
+- Fine-tune on TinyStories with top_k=1 (capacity stress)
+
+This creates genuine routing constraint without synthetic bias injection.
+
+### Results
+
+| Metric | Controller ON | Controller OFF | Delta |
+|--------|---------------|----------------|-------|
+| Final Neff | 3.85 | 3.72 | **+0.13** |
+| Mean Neff | 3.82 | 3.72 | +0.10 |
+| Dead Events | 0 | 0 | 0 |
+
+Controller engaged 73% of steps, abstained appropriately 27%.
+
+### Verdict
+
+**HELPS** - Controller improves topology under realistic capacity stress.
+Phase 3 (orthogonal bases) is now optional enhancement, not required.
+
+### Reproduction
+
+```bash
+# From nanoMoE directory, with chronomoe installed:
+cd /path/to/nanoMoE
+uv pip install /path/to/ChronoMoEv2
+python experiments/domain_shift_stressed.py
+```
+
+This runs the full experiment (~10 min on MPS) and prints the summary table.
+
+---
+
 ## References
 
 - Severity sweep: `nanoMoE/experiments/severity_sweep.py`
 - Distillation test: `nanoMoE/experiments/distillation_test.py`
+- Domain shift (stressed): `nanoMoE/experiments/domain_shift_stressed.py`
+- Domain shift (baseline): `nanoMoE/experiments/domain_shift_test.py`
 - Controller policy: `chronomoe/controller/policy.py`
 - Control state: `chronomoe/controller/state.py`
