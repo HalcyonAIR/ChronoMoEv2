@@ -38,6 +38,11 @@ class ControlState:
     abstain: bool = False
     abstain_reason: str = ""      # Why abstaining: "harm_backoff", "no_pressure", etc.
 
+    # Phase 2.5: Multi-mode steering selection
+    # The harm guard tracks which modes help this layer
+    active_mode: str = "anti_dominance"  # Current steering mode
+    mode_scores: Optional[dict] = None   # Per-mode success scores
+
     # Emergency mechanisms (Phase 2: compute but don't enforce)
     quota: Optional[List[float]] = None  # Per-expert max share cap
     dominant: Optional[List[int]] = None  # Top experts in window
@@ -60,6 +65,8 @@ class ControlState:
             'prev_top2': self.prev_top2,
             'abstain': self.abstain,
             'abstain_reason': self.abstain_reason,
+            'active_mode': self.active_mode,
+            'mode_scores': self.mode_scores,
         }
 
 
@@ -106,3 +113,10 @@ class ControlConfig:
     # When backoff drops below this, switch to explicit abstain mode
     # Abstain = deliberate "no intervention" policy, not just near-zero scale
     abstain_backoff_threshold: float = 0.15  # Below this, abstain entirely
+
+    # Phase 2.5: Multi-mode steering selection
+    # Harm guard selects which mode helps each layer
+    mode_harm_penalty: float = 0.3       # Reduce mode score on harm detection
+    mode_success_bonus: float = 0.1      # Increase mode score on success
+    mode_min_score: float = 0.2          # Below this, mode is disabled
+    mode_switch_threshold: float = 0.15  # Switch modes if current score below this

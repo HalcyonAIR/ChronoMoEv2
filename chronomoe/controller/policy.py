@@ -80,8 +80,16 @@ def update_control_state(
     Update control state from layer snapshot.
     This is the core control loop.
 
+    Phase 2.5: Includes multi-mode steering selection.
+    The harm guard tracks which modes help each layer and selects the best.
+
     Mutates state in place and returns it.
     """
+    # Initialize mode scores if not set
+    MODES = ['anti_dominance', 'entropy_max', 'lift_tail', 'abstain']
+    if state.mode_scores is None:
+        state.mode_scores = {m: 1.0 for m in MODES}
+
     # Closed-loop "do no harm" guard
     # Check if previous intervention made things worse
     current_top2 = layer.top2_share
@@ -91,12 +99,47 @@ def update_control_state(
     backoff_factor = getattr(config, 'harm_backoff_factor', 0.5)
     recovery_rate = getattr(config, 'harm_recovery_rate', 0.2)
 
-    if state.prev_scale > 0.01 and top2_delta > harm_threshold:
-        # Intervention increased Top2 - back off
+    # Mode selection config
+    mode_harm_penalty = getattr(config, 'mode_harm_penalty', 0.3)
+    mode_success_bonus = getattr(config, 'mode_success_bonus', 0.1)
+    mode_min_score = getattr(config, 'mode_min_score', 0.2)
+    mode_switch_threshold = getattr(config, 'mode_switch_threshold', 0.15)
+
+    harm_detected = state.prev_scale > 0.01 and top2_delta > harm_threshold
+
+    if harm_detected:
+        # Intervention increased Top2 - back off and penalize current mode
         state.harm_backoff = state.harm_backoff * backoff_factor
+
+        # Penalize the active mode that caused harm
+        active = state.active_mode
+        if active in state.mode_scores:
+            state.mode_scores[active] = max(
+                mode_min_score,
+                state.mode_scores[active] - mode_harm_penalty
+            )
+
+        # If current mode score dropped below threshold, switch to best alternative
+        if state.mode_scores.get(active, 0) < mode_switch_threshold:
+            # Find best mode that isn't the current one
+            best_mode = active
+            best_score = 0
+            for mode, score in state.mode_scores.items():
+                if mode != active and score > best_score:
+                    best_mode = mode
+                    best_score = score
+            state.active_mode = best_mode
     else:
-        # No harm detected - gradually recover toward 1.0
+        # No harm detected - gradually recover backoff and reward current mode
         state.harm_backoff = state.harm_backoff + recovery_rate * (1.0 - state.harm_backoff)
+
+        # Small bonus to current mode for not causing harm
+        active = state.active_mode
+        if active in state.mode_scores and state.prev_scale > 0.01:
+            state.mode_scores[active] = min(
+                1.0,
+                state.mode_scores[active] + mode_success_bonus
+            )
 
     # Clamp backoff to reasonable range
     state.harm_backoff = np.clip(state.harm_backoff, 0.1, 1.0)

@@ -116,19 +116,28 @@ class Controller:
             # Compute lens scale (with warmup)
             s = compute_lens_scale(state, self.config, step=snapshot.step)
 
-            # Set lens scale and dominant expert (this is the actuator)
+            # Set lens scale, mode, and steering direction (this is the actuator)
             lens_norms = None
             lens_rank = 0
             if layer_id in lenses:
                 lens = lenses[layer_id]
                 lens.set_scale(s)
 
-                # Set dominant expert and utilization for anti-dominance steering
-                # Pass full utilization shares to steer toward uniform distribution
+                # Phase 2.5: Set steering mode from control state
+                from ..lens import SteeringMode
+                mode_map = {
+                    'anti_dominance': SteeringMode.ANTI_DOMINANCE,
+                    'entropy_max': SteeringMode.ENTROPY_MAX,
+                    'lift_tail': SteeringMode.LIFT_TAIL,
+                    'abstain': SteeringMode.ABSTAIN,
+                }
+                active_mode = getattr(state, 'active_mode', 'anti_dominance')
+                lens.set_steering_mode(mode_map.get(active_mode, SteeringMode.ANTI_DOMINANCE))
+
+                # Update steering direction with current utilization shares
                 shares = layer_snap.utilization_shares
                 if shares and len(shares) > 0:
-                    dominant_idx = max(range(len(shares)), key=lambda i: shares[i])
-                    lens.set_dominant_expert(dominant_idx, utilization_shares=shares)
+                    lens.update_steering(utilization_shares=shares)
 
                 lens_norms = lens.get_norms()
                 lens_rank = lens.rank

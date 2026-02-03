@@ -17,10 +17,23 @@ Design constraints:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Dict, Any
+from enum import Enum
+from typing import Optional, Dict, Any, List
 
 import torch
 import torch.nn as nn
+
+
+class SteeringMode(Enum):
+    """
+    Phase 2.5: Multiple steering modes for Clock 2 policy selection.
+
+    The harm guard selects which mode to use based on what helps each layer.
+    """
+    ANTI_DOMINANCE = "anti_dominance"  # Push away from dominant toward others
+    ENTROPY_MAX = "entropy_max"        # Push toward uniform distribution
+    LIFT_TAIL = "lift_tail"            # Boost under-utilized only (no suppression)
+    ABSTAIN = "abstain"                # Explicit no intervention
 
 
 @dataclass(frozen=True)
@@ -48,16 +61,20 @@ class LensState:
 
 class ChronoLens(nn.Module):
     """
-    Anti-dominance steering for router input geometry.
+    Multi-mode steering for router input geometry.
 
     Phase 1: Identity (no warp)
-    Phase 2: Deterministic anti-dominance steering using router weights
+    Phase 2: Single anti-dominance steering
+    Phase 2.5: Multiple steering modes with harm-guard selection
     Phase 3+: Learnable refinement around deterministic baseline
 
-    The steering direction is derived from router weights:
-    - Identify dominant expert e* from routing statistics
-    - Compute d = normalize(W_others - W_e*)
-    - Apply: x' = x + s * d (pushes away from dominant expert)
+    Steering modes:
+    - ANTI_DOMINANCE: Push away from dominant toward others
+    - ENTROPY_MAX: Push toward uniform distribution
+    - LIFT_TAIL: Boost under-utilized only (no suppression)
+    - ABSTAIN: No intervention
+
+    The harm guard tracks which mode helps each layer and selects accordingly.
 
     Args:
         d_model: Hidden dimension of input
@@ -67,7 +84,8 @@ class ChronoLens(nn.Module):
     Usage:
         lens = ChronoLens(d_model=512, rank=8, layer_id=0)
         lens.set_router_weights(router.w_g.weight)  # Set once at init
-        lens.set_dominant_expert(2)  # Updated by controller
+        lens.set_steering_mode(SteeringMode.ANTI_DOMINANCE)
+        lens.update_steering(utilization_shares)  # Updated by controller
         lens.set_scale(0.1)  # Gated by pressure
         x_steered = lens(x)
     """
@@ -86,13 +104,14 @@ class ChronoLens(nn.Module):
         # Gating scalar (set by controller, not a learned parameter)
         self.register_buffer('_scale', torch.tensor(0.0))
 
-        # Anti-dominance steering (Phase 2)
-        # These are set from router weights, not learned
+        # Multi-mode steering (Phase 2.5)
         self.register_buffer('_steering_direction', torch.zeros(d_model))
         self.register_buffer('_router_weights', torch.zeros(1, d_model))  # Placeholder
         self._n_experts = 0
         self._dominant_expert = -1
-        self._use_deterministic_steering = True  # Phase 2: use W-based steering
+        self._steering_mode = SteeringMode.ANTI_DOMINANCE
+        self._use_deterministic_steering = True  # Phase 2+: use W-based steering
+        self._utilization_shares: Optional[List[float]] = None
 
     @property
     def s(self) -> float:
@@ -110,47 +129,110 @@ class ChronoLens(nn.Module):
         # Store on same device as lens
         self._router_weights = w_g.detach().clone().to(self._steering_direction.device)
 
-    def set_dominant_expert(self, expert_id: int, utilization_shares: list = None):
-        """
-        Update dominant expert and recompute steering direction.
+    def set_steering_mode(self, mode: SteeringMode):
+        """Set the active steering mode."""
+        self._steering_mode = mode
 
-        The steering direction pushes toward uniform distribution
-        by reducing over-utilized experts and boosting under-utilized ones.
+    def get_steering_mode(self) -> SteeringMode:
+        """Get the current steering mode."""
+        return self._steering_mode
+
+    def _compute_anti_dominance_direction(self, W: torch.Tensor, shares: torch.Tensor) -> torch.Tensor:
+        """
+        ANTI_DOMINANCE: Push away from dominant toward others.
+        Original Phase 2 steering.
+        """
+        uniform = 1.0 / self._n_experts
+        weights = uniform - shares  # Positive for under-utilized, negative for over
+        d = torch.einsum('e,ed->d', weights, W)
+        return d
+
+    def _compute_entropy_max_direction(self, W: torch.Tensor, shares: torch.Tensor) -> torch.Tensor:
+        """
+        ENTROPY_MAX: Push toward uniform distribution.
+        Uses softmax temperature-style scaling.
+        """
+        # Direction toward the mean of all expert directions
+        W_mean = W.mean(dim=0)
+        # Weighted deviation from mean
+        deviations = W - W_mean  # [n_exp, d_model]
+        uniform = 1.0 / self._n_experts
+        # Push toward experts that are below uniform, away from those above
+        weights = uniform - shares
+        d = torch.einsum('e,ed->d', weights, deviations)
+        return d
+
+    def _compute_lift_tail_direction(self, W: torch.Tensor, shares: torch.Tensor) -> torch.Tensor:
+        """
+        LIFT_TAIL: Boost under-utilized experts only (no suppression).
+        Positive-only weights - never pushes against dominant.
+        """
+        uniform = 1.0 / self._n_experts
+        weights = torch.relu(uniform - shares)  # Only positive (under-utilized)
+        if weights.sum() < 1e-6:
+            return torch.zeros_like(W[0])
+        weights = weights / weights.sum()  # Normalize
+        d = torch.einsum('e,ed->d', weights, W)
+        return d
+
+    def update_steering(self, utilization_shares: list = None):
+        """
+        Recompute steering direction based on current mode and utilization.
 
         Args:
-            expert_id: Index of dominant expert (0 to n_exp-1)
-            utilization_shares: Current utilization per expert (if available)
+            utilization_shares: Current utilization per expert
         """
-        if expert_id < 0 or self._n_experts == 0:
-            self._dominant_expert = -1
+        if self._n_experts == 0:
             self._steering_direction.zero_()
             return
 
-        self._dominant_expert = expert_id
         W = self._router_weights  # [n_exp, d_model]
 
-        if utilization_shares is not None and len(utilization_shares) == self._n_experts:
-            # Use utilization shares to compute steering toward uniform
-            # Direction = weighted sum of W_i, where weight = (1/n - share_i)
-            # This pushes toward under-utilized experts, away from over-utilized
-            shares = torch.tensor(utilization_shares, device=W.device, dtype=W.dtype)
-            uniform = 1.0 / self._n_experts
-            weights = uniform - shares  # Positive for under-utilized, negative for over
-            # Weight each expert's direction by how much we want to boost/reduce it
-            d = torch.einsum('e,ed->d', weights, W)  # [d_model]
-        else:
-            # Fallback: simple push away from dominant toward others
-            W_dominant = W[expert_id]
-            mask = torch.ones(self._n_experts, dtype=torch.bool, device=W.device)
-            mask[expert_id] = False
-            W_others = W[mask].mean(dim=0)
-            d = W_others - W_dominant
+        # Store for reference
+        self._utilization_shares = utilization_shares
 
+        # ABSTAIN mode: zero direction
+        if self._steering_mode == SteeringMode.ABSTAIN:
+            self._steering_direction.zero_()
+            return
+
+        # Need utilization shares for other modes
+        if utilization_shares is None or len(utilization_shares) != self._n_experts:
+            # Fallback to uniform assumption
+            utilization_shares = [1.0 / self._n_experts] * self._n_experts
+
+        shares = torch.tensor(utilization_shares, device=W.device, dtype=W.dtype)
+
+        # Compute direction based on mode
+        if self._steering_mode == SteeringMode.ANTI_DOMINANCE:
+            d = self._compute_anti_dominance_direction(W, shares)
+        elif self._steering_mode == SteeringMode.ENTROPY_MAX:
+            d = self._compute_entropy_max_direction(W, shares)
+        elif self._steering_mode == SteeringMode.LIFT_TAIL:
+            d = self._compute_lift_tail_direction(W, shares)
+        else:
+            d = torch.zeros_like(W[0])
+
+        # Normalize
         d_norm = d.norm()
         if d_norm > 1e-6:
-            d = d / d_norm  # Normalize
+            d = d / d_norm
 
         self._steering_direction = d
+
+        # Update dominant expert tracking (for compatibility)
+        dominant_idx = shares.argmax().item()
+        self._dominant_expert = dominant_idx
+
+    def set_dominant_expert(self, expert_id: int, utilization_shares: list = None):
+        """
+        Legacy method - calls update_steering for backward compatibility.
+
+        Args:
+            expert_id: Index of dominant expert (ignored, computed from shares)
+            utilization_shares: Current utilization per expert
+        """
+        self.update_steering(utilization_shares)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

@@ -119,18 +119,43 @@ Control decisions are logged to `telemetry/run_*/control_decisions.jsonl`:
 
 ---
 
-## Phase 2.5: Directional Policy Selection (Deferred)
+## Phase 2.5: Multi-Mode Steering (Architecture Complete)
 
-The next architectural step is giving Clock 2 multiple steering modes:
+**Status:** Architecture validated, modes need new bases
 
-1. Anti-dominance push (current)
-2. Entropy-increasing push
-3. "Spread mass" vs "lift tail"
-4. Explicit "do nothing"
+### What's Implemented
 
-The harm guard would then select which mode helps, rather than just reducing magnitude.
+Clock 2 now has multiple steering modes with harm-guard selection:
 
-**This is only needed if future experiments land in the intermediate regime.**
+1. **ANTI_DOMINANCE** - Push away from dominant toward others
+2. **ENTROPY_MAX** - Push toward uniform distribution
+3. **LIFT_TAIL** - Boost under-utilized only (no suppression)
+4. **ABSTAIN** - Explicit no intervention
+
+The harm guard tracks per-mode scores and switches when a mode causes harm.
+
+### Key Finding
+
+**Current modes are all W-basis variants.** They compute steering directions as linear combinations of router weight vectors W. When the W-basis is wrong for a layer, all modes fail together.
+
+Severity sweep results:
+- bias=5: Controller still helps ✅
+- bias=10-20: All modes fail similarly ❌
+
+This is not a tuning problem - it's a **basis limitation**.
+
+### Path to Phase 3
+
+To solve intermediate severity, we need **orthogonal or learned bases**:
+
+1. **Activation PCA/SVD** - Bases from router activation patterns
+2. **Gradient-based directions** - What directions reduce collapse loss
+3. **Learned per-layer adapters** - Let model discover what helps
+
+Until then, Phase 2 remains the validated protective envelope:
+- Helps at mild severity (distillation validated)
+- Correctly abstains at extreme severity
+- Known gap at intermediate (basis limitation)
 
 ---
 
