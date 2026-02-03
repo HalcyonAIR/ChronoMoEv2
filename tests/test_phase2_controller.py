@@ -225,13 +225,13 @@ def test_lens_scale_gating():
         lens_pressure_coeff=1.0,
     )
 
-    # Low pressure -> low scale
+    # Low pressure -> low scale (step=200 to be past warmup)
     state_low = ControlState(layer_id=0, n_experts=4, pressure=0.01)
-    scale_low = compute_lens_scale(state_low, config)
+    scale_low = compute_lens_scale(state_low, config, step=200)
 
     # High pressure -> higher scale (but capped)
     state_high = ControlState(layer_id=0, n_experts=4, pressure=0.5)
-    scale_high = compute_lens_scale(state_high, config)
+    scale_high = compute_lens_scale(state_high, config, step=200)
 
     assert scale_low < scale_high, "Higher pressure should give higher scale"
     assert scale_high <= config.lens_scale_max, "Scale should be capped"

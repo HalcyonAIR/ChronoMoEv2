@@ -113,16 +113,25 @@ class Controller:
             # Update control state from metrics
             update_control_state(state, layer_snap, self.config, snapshot.step)
 
-            # Compute lens scale
-            s = compute_lens_scale(state, self.config)
+            # Compute lens scale (with warmup)
+            s = compute_lens_scale(state, self.config, step=snapshot.step)
 
-            # Set lens scale (this is the actuator)
+            # Set lens scale and dominant expert (this is the actuator)
             lens_norms = None
             lens_rank = 0
             if layer_id in lenses:
-                lenses[layer_id].set_scale(s)
-                lens_norms = lenses[layer_id].get_norms()
-                lens_rank = lenses[layer_id].rank
+                lens = lenses[layer_id]
+                lens.set_scale(s)
+
+                # Set dominant expert and utilization for anti-dominance steering
+                # Pass full utilization shares to steer toward uniform distribution
+                shares = layer_snap.utilization_shares
+                if shares and len(shares) > 0:
+                    dominant_idx = max(range(len(shares)), key=lambda i: shares[i])
+                    lens.set_dominant_expert(dominant_idx, utilization_shares=shares)
+
+                lens_norms = lens.get_norms()
+                lens_rank = lens.rank
 
             # Create decision log
             layer_alerts = [a for a in snapshot.alerts if f"Layer {layer_id}" in a]
@@ -158,9 +167,9 @@ class Controller:
         """Get all control states."""
         return self.states.copy()
 
-    def get_lens_scales(self) -> Dict[int, float]:
+    def get_lens_scales(self, step: int = 0) -> Dict[int, float]:
         """Get current lens scales for all layers."""
         return {
-            layer_id: compute_lens_scale(state, self.config)
+            layer_id: compute_lens_scale(state, self.config, step=step)
             for layer_id, state in self.states.items()
         }

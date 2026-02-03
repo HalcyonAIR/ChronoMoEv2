@@ -68,6 +68,9 @@ class ControlDecision:
             'pressure': state.pressure,
             'heat': state.heat,
             'forgetting': state.forgetting,
+            'harm_backoff': getattr(state, 'harm_backoff', 1.0),
+            'abstain': getattr(state, 'abstain', False),
+            'abstain_reason': getattr(state, 'abstain_reason', ''),
         }
 
         actuator = {

@@ -27,6 +27,17 @@ class ControlState:
     debt_ema: float = 0.0      # Can be same as pressure
     collapse_score: float = 0.0
 
+    # Closed-loop "do no harm" guard
+    prev_top2: float = 0.0        # Top2 at previous checkpoint
+    prev_scale: float = 0.0       # Scale applied at previous checkpoint
+    harm_backoff: float = 1.0     # Multiplier for scale (1.0 = normal, <1.0 = backing off)
+
+    # Explicit abstention mode
+    # When True, controller deliberately chooses "no intervention" as policy
+    # This is different from low backoff - it's a first-class decision
+    abstain: bool = False
+    abstain_reason: str = ""      # Why abstaining: "harm_backoff", "no_pressure", etc.
+
     # Emergency mechanisms (Phase 2: compute but don't enforce)
     quota: Optional[List[float]] = None  # Per-expert max share cap
     dominant: Optional[List[int]] = None  # Top experts in window
@@ -45,6 +56,10 @@ class ControlState:
             'last_update_step': self.last_update_step,
             'quota': self.quota,
             'dominant': self.dominant,
+            'harm_backoff': self.harm_backoff,
+            'prev_top2': self.prev_top2,
+            'abstain': self.abstain,
+            'abstain_reason': self.abstain_reason,
         }
 
 
@@ -69,6 +84,25 @@ class ControlConfig:
     forgetting_gain: float = 0.10
 
     # Lens gating
-    lens_scale_max: float = 0.05         # s_max - start small!
+    lens_scale_max: float = 0.5          # s_max - allow strong intervention
     lens_pressure_coeff: float = 1.0     # c1
     lens_heat_coeff: float = 0.0         # c2 - keep simple initially
+
+    # Pressure cap: prevent over-steering at extreme severity
+    # Empirical finding: linear response fails above ~0.5 pressure
+    pressure_cap: float = 0.5            # Max effective pressure for lens scale
+
+    # Warmup: cap scale during early training while lens learns direction
+    lens_warmup_steps: int = 100         # Steps before full scale allowed
+    lens_warmup_scale: float = 0.02      # Max scale during warmup
+
+    # Closed-loop "do no harm" guard
+    # If Top2 increases after intervention, back off scale for that layer
+    harm_top2_threshold: float = 0.02    # Min Top2 increase to trigger backoff
+    harm_backoff_factor: float = 0.5     # Multiply scale by this on harm detection
+    harm_recovery_rate: float = 0.2      # Rate at which backoff recovers toward 1.0
+
+    # Explicit abstention
+    # When backoff drops below this, switch to explicit abstain mode
+    # Abstain = deliberate "no intervention" policy, not just near-zero scale
+    abstain_backoff_threshold: float = 0.15  # Below this, abstain entirely

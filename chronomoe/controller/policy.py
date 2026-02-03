@@ -82,6 +82,28 @@ def update_control_state(
 
     Mutates state in place and returns it.
     """
+    # Closed-loop "do no harm" guard
+    # Check if previous intervention made things worse
+    current_top2 = layer.top2_share
+    top2_delta = current_top2 - state.prev_top2
+
+    harm_threshold = getattr(config, 'harm_top2_threshold', 0.02)
+    backoff_factor = getattr(config, 'harm_backoff_factor', 0.5)
+    recovery_rate = getattr(config, 'harm_recovery_rate', 0.2)
+
+    if state.prev_scale > 0.01 and top2_delta > harm_threshold:
+        # Intervention increased Top2 - back off
+        state.harm_backoff = state.harm_backoff * backoff_factor
+    else:
+        # No harm detected - gradually recover toward 1.0
+        state.harm_backoff = state.harm_backoff + recovery_rate * (1.0 - state.harm_backoff)
+
+    # Clamp backoff to reasonable range
+    state.harm_backoff = np.clip(state.harm_backoff, 0.1, 1.0)
+
+    # Store current top2 for next comparison
+    state.prev_top2 = current_top2
+
     # Compute debt
     debt, components = compute_topology_debt(layer, config)
 
@@ -120,15 +142,80 @@ def update_control_state(
     return state
 
 
-def compute_lens_scale(state: 'ControlState', config: 'ControlConfig') -> float:
+def compute_lens_scale(
+    state: 'ControlState',
+    config: 'ControlConfig',
+    step: int = 0
+) -> float:
     """
     Compute lens gating scalar from control state.
-    s = clamp(c1*pressure + c2*heat, 0, s_max)
+    s = clamp(c1*pressure_eff + c2*heat, 0, s_max) * harm_backoff
+
+    Uses capped pressure to prevent over-steering at high severity.
+    Empirically, linear response causes over-correction above pressure=0.5.
+
+    Includes warmup: during early training, cap scale to allow lens
+    to learn useful warp direction before applying strong intervention.
+
+    Applies harm_backoff: if previous intervention made Top2 worse,
+    reduce scale to avoid repeating the harm. This is the closed-loop
+    "do no harm" guard.
+
+    EXPLICIT ABSTENTION: When backoff drops below threshold, or when
+    there's no meaningful pressure, the controller deliberately chooses
+    "no intervention" as a first-class policy decision. This is logged
+    separately from low-scale intervention.
 
     This determines how much the lens warps router input geometry.
     """
+    harm_backoff = getattr(state, 'harm_backoff', 1.0)
+    abstain_threshold = getattr(config, 'abstain_backoff_threshold', 0.15)
+
+    # EXPLICIT ABSTENTION CHECK
+    # Abstain is a deliberate policy choice, not just near-zero scale
+
+    # Reason 1: Harm backoff too low - we've learned intervention hurts this layer
+    if harm_backoff < abstain_threshold:
+        state.abstain = True
+        state.abstain_reason = "harm_backoff"
+        state.prev_scale = 0.0
+        return 0.0
+
+    # Reason 2: No meaningful pressure - nothing to fix
+    if state.pressure < 0.01:
+        state.abstain = True
+        state.abstain_reason = "no_pressure"
+        state.prev_scale = 0.0
+        return 0.0
+
+    # Not abstaining - compute scale normally
+    state.abstain = False
+    state.abstain_reason = ""
+
+    # Cap pressure to prevent over-steering at extreme severity
+    # Empirical finding: linear response fails above pressure ~0.5
+    pressure_cap = getattr(config, 'pressure_cap', 0.5)
+    pressure_effective = min(state.pressure, pressure_cap)
+
     s = (
-        config.lens_pressure_coeff * state.pressure +
+        config.lens_pressure_coeff * pressure_effective +
         config.lens_heat_coeff * state.heat
     )
-    return float(np.clip(s, 0, config.lens_scale_max))
+
+    # Apply warmup cap during early training
+    if step < config.lens_warmup_steps:
+        s_max = config.lens_warmup_scale
+    else:
+        s_max = config.lens_scale_max
+
+    # Apply base clamp
+    s = float(np.clip(s, 0, s_max))
+
+    # Apply closed-loop "do no harm" backoff
+    # If previous intervention increased Top2, reduce this layer's scale
+    s = s * harm_backoff
+
+    # Store scale for next harm check
+    state.prev_scale = s
+
+    return s

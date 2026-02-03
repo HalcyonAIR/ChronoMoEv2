@@ -25,7 +25,7 @@ Usage (Phase 2):
 from .events import RoutingEvent, ExpertState
 from .snapshots import SystemSnapshot, LayerSnapshot, check_immediate_alerts
 from .io import TelemetryWriter, create_run_manifest, get_git_commit, load_events, load_snapshots, load_manifest
-from .lens import ChronoLens, IdentityLens, LensState
+from .lens import ChronoLens, IdentityLens, LensState, compute_lens_aux_loss
 from .metrics import (
     compute_utilization_shares,
     compute_entropy,
@@ -54,6 +54,7 @@ __all__ = [
     "ChronoLens",
     "IdentityLens",
     "LensState",
+    "compute_lens_aux_loss",
     # I/O
     "TelemetryWriter",
     "create_run_manifest",
