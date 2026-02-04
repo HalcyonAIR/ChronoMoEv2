@@ -43,6 +43,10 @@ class ControlState:
     active_mode: str = "anti_dominance"  # Current steering mode
     mode_scores: Optional[dict] = None   # Per-mode success scores
 
+    # Clock 3: Intervention outcome tracking
+    # EMA of whether intervention helps (+1) or hurts (-1)
+    intervention_helped_ema: float = 0.0
+
     # Emergency mechanisms (Phase 2: compute but don't enforce)
     quota: Optional[List[float]] = None  # Per-expert max share cap
     dominant: Optional[List[int]] = None  # Top experts in window
@@ -67,6 +71,7 @@ class ControlState:
             'abstain_reason': self.abstain_reason,
             'active_mode': self.active_mode,
             'mode_scores': self.mode_scores,
+            'intervention_helped_ema': self.intervention_helped_ema,
         }
 
 

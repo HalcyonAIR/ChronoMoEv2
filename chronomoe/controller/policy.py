@@ -7,11 +7,12 @@ All functions are pure where possible.
 """
 
 import numpy as np
-from typing import Tuple, TYPE_CHECKING
+from typing import Tuple, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..snapshots import LayerSnapshot
     from .state import ControlState, ControlConfig
+    from .priors import LayerPriors
 
 
 def compute_topology_debt(
@@ -74,7 +75,8 @@ def update_control_state(
     state: 'ControlState',
     layer: 'LayerSnapshot',
     config: 'ControlConfig',
-    step: int
+    step: int,
+    prior: Optional['LayerPriors'] = None
 ) -> 'ControlState':
     """
     Update control state from layer snapshot.
@@ -82,6 +84,9 @@ def update_control_state(
 
     Phase 2.5: Includes multi-mode steering selection.
     The harm guard tracks which modes help each layer and selects the best.
+
+    Clock 3: If prior is provided, uses learned characteristics and
+    updates intervention_helped_ema for persistence.
 
     Mutates state in place and returns it.
     """
@@ -106,10 +111,20 @@ def update_control_state(
     mode_switch_threshold = getattr(config, 'mode_switch_threshold', 0.15)
 
     harm_detected = state.prev_scale > 0.01 and top2_delta > harm_threshold
+    help_detected = state.prev_scale > 0.01 and top2_delta < -harm_threshold
+
+    # Clock 3: Track intervention outcome for priors
+    # intervention_helped_ema: +1 means intervention helped, -1 means it hurt
+    ema_alpha = 0.2  # How fast to update the EMA
+    if not hasattr(state, 'intervention_helped_ema'):
+        state.intervention_helped_ema = 0.0
 
     if harm_detected:
         # Intervention increased Top2 - back off and penalize current mode
         state.harm_backoff = state.harm_backoff * backoff_factor
+
+        # Clock 3: Update intervention outcome EMA (hurt)
+        state.intervention_helped_ema = (1 - ema_alpha) * state.intervention_helped_ema + ema_alpha * (-1.0)
 
         # Penalize the active mode that caused harm
         active = state.active_mode
@@ -129,8 +144,22 @@ def update_control_state(
                     best_mode = mode
                     best_score = score
             state.active_mode = best_mode
+    elif help_detected:
+        # Intervention decreased Top2 - it helped!
+        state.harm_backoff = state.harm_backoff + recovery_rate * (1.0 - state.harm_backoff)
+
+        # Clock 3: Update intervention outcome EMA (helped)
+        state.intervention_helped_ema = (1 - ema_alpha) * state.intervention_helped_ema + ema_alpha * (1.0)
+
+        # Bonus to current mode for helping
+        active = state.active_mode
+        if active in state.mode_scores:
+            state.mode_scores[active] = min(
+                1.0,
+                state.mode_scores[active] + mode_success_bonus
+            )
     else:
-        # No harm detected - gradually recover backoff and reward current mode
+        # No significant change - gradually recover backoff
         state.harm_backoff = state.harm_backoff + recovery_rate * (1.0 - state.harm_backoff)
 
         # Small bonus to current mode for not causing harm
@@ -138,7 +167,7 @@ def update_control_state(
         if active in state.mode_scores and state.prev_scale > 0.01:
             state.mode_scores[active] = min(
                 1.0,
-                state.mode_scores[active] + mode_success_bonus
+                state.mode_scores[active] + mode_success_bonus * 0.5  # Smaller bonus for neutral
             )
 
     # Clamp backoff to reasonable range
@@ -188,11 +217,12 @@ def update_control_state(
 def compute_lens_scale(
     state: 'ControlState',
     config: 'ControlConfig',
-    step: int = 0
+    step: int = 0,
+    prior: Optional['LayerPriors'] = None
 ) -> float:
     """
     Compute lens gating scalar from control state.
-    s = clamp(c1*pressure_eff + c2*heat, 0, s_max) * harm_backoff
+    s = clamp(c1*pressure_eff + c2*heat, 0, s_max) * harm_backoff * fragility
 
     Uses capped pressure to prevent over-steering at high severity.
     Empirically, linear response causes over-correction above pressure=0.5.
@@ -209,10 +239,19 @@ def compute_lens_scale(
     "no intervention" as a first-class policy decision. This is logged
     separately from low-scale intervention.
 
+    Clock 3: If prior is provided, uses learned characteristics:
+    - prior.abstain_threshold: Override config threshold
+    - prior.scale_cap: Override config max scale
+    - prior.fragility: Multiply final scale (>1 = more intervention)
+
     This determines how much the lens warps router input geometry.
     """
     harm_backoff = getattr(state, 'harm_backoff', 1.0)
     abstain_threshold = getattr(config, 'abstain_backoff_threshold', 0.15)
+
+    # Clock 3: Override abstain threshold from prior if available
+    if prior is not None and prior.abstain_threshold is not None:
+        abstain_threshold = prior.abstain_threshold
 
     # EXPLICIT ABSTENTION CHECK
     # Abstain is a deliberate policy choice, not just near-zero scale
@@ -228,6 +267,14 @@ def compute_lens_scale(
     if state.pressure < 0.01:
         state.abstain = True
         state.abstain_reason = "no_pressure"
+        state.prev_scale = 0.0
+        return 0.0
+
+    # Clock 3: Check if prior indicates intervention consistently hurts this layer
+    if prior is not None and prior.intervention_helped_ema < -0.5:
+        # Prior learned that intervention usually hurts - abstain
+        state.abstain = True
+        state.abstain_reason = "prior_intervention_hurts"
         state.prev_scale = 0.0
         return 0.0
 
@@ -251,12 +298,22 @@ def compute_lens_scale(
     else:
         s_max = config.lens_scale_max
 
+    # Clock 3: Override scale cap from prior if available
+    if prior is not None and prior.scale_cap is not None:
+        s_max = min(s_max, prior.scale_cap)
+
     # Apply base clamp
     s = float(np.clip(s, 0, s_max))
 
     # Apply closed-loop "do no harm" backoff
     # If previous intervention increased Top2, reduce this layer's scale
     s = s * harm_backoff
+
+    # Clock 3: Apply fragility multiplier from prior
+    # fragility > 1.0 means layer needs more intervention
+    # fragility < 1.0 means layer is stable, intervene less
+    if prior is not None:
+        s = s * prior.fragility
 
     # Store scale for next harm check
     state.prev_scale = s

@@ -30,6 +30,7 @@ from .state import ControlState, ControlConfig
 from .policy import compute_topology_debt, update_control_state, compute_lens_scale
 from .decisions import ControlDecision
 from .hooks import Controller
+from .priors import LayerPriors, save_priors, load_priors, apply_priors_to_state, write_priors
 
 __all__ = [
     # State
@@ -43,4 +44,10 @@ __all__ = [
     "ControlDecision",
     # Integration
     "Controller",
+    # Clock 3: Constitutional Priors
+    "LayerPriors",
+    "save_priors",
+    "load_priors",
+    "apply_priors_to_state",
+    "write_priors",
 ]
