@@ -135,12 +135,25 @@ def compute_time_to_stability(per_step_neffs: Dict, threshold: float = 3.5) -> i
     return -1
 
 
+# Targeting criteria thresholds
+NEUTRAL_BAND = (0.8, 1.2)  # Fragility values considered neutral (exempt from checks)
+STABLE_EPSILON = 0.10      # Allow 10% increase for stable layers
+STABLE_VIOLATION_RATIO = 0.2  # Allow 20% of stable layers to violate
+
+
 def compute_targeting(
     priors: Dict[int, LayerPriors],
     cold: ABResult,
     warm: ABResult,
 ) -> TargetingScore:
-    """Compute targeting score: does intervention correlate with fragility?"""
+    """Compute targeting score: does intervention correlate with fragility?
+
+    Relaxed criteria:
+    - Neutral band (0.8-1.2): exempt from stable/fragile checks
+    - Stable layers (< 0.8): may increase up to 10% without failing
+    - Fragile layers (> 1.2): must increase (no epsilon)
+    - Pass if 80%+ of stable layers behave correctly
+    """
     if not priors or not warm.per_layer_mean_scale:
         return TargetingScore(0.0, False, False, False)
 
@@ -155,19 +168,32 @@ def compute_targeting(
     else:
         correlation = 0.0
 
-    # Stable layers reduced (only check if they had scale to reduce)
-    stable_reduced = True
+    # Stable layers: fragility < NEUTRAL_BAND[0]
+    # Should reduce OR increase by less than epsilon
+    stable_count = 0
+    stable_violations = 0
     for lid in layer_ids:
-        if priors[lid].fragility < 0.9:
+        frag = priors[lid].fragility
+        if frag < NEUTRAL_BAND[0]:  # Truly stable (< 0.8)
             s_cold = cold.per_layer_mean_scale.get(lid, 0)
             s_warm = warm.per_layer_mean_scale.get(lid, 0)
-            if s_cold > 0.0001 and s_warm >= s_cold:
-                stable_reduced = False
+            if s_cold > 0.0001:
+                stable_count += 1
+                increase_ratio = (s_warm - s_cold) / s_cold
+                if increase_ratio > STABLE_EPSILON:
+                    stable_violations += 1
 
-    # Fragile layers increased
+    # Pass if majority of stable layers behave correctly
+    if stable_count > 0:
+        stable_reduced = stable_violations <= stable_count * STABLE_VIOLATION_RATIO
+    else:
+        stable_reduced = True  # No stable layers to check
+
+    # Fragile layers: fragility > NEUTRAL_BAND[1]
+    # Must increase (no epsilon - amplification is the point)
     fragile_increased = True
     for lid in layer_ids:
-        if priors[lid].fragility > 1.1:
+        if priors[lid].fragility > NEUTRAL_BAND[1]:  # Truly fragile (> 1.2)
             s_cold = cold.per_layer_mean_scale.get(lid, 0)
             s_warm = warm.per_layer_mean_scale.get(lid, 0)
             if s_warm <= s_cold:

@@ -35,6 +35,7 @@ class ShockProfile:
     stride: int = 1  # 1 = every layer is MoE
     n_embd: int = 128
     n_head: int = 4
+    block_size: int = 128  # Sequence length
 
     # Capacity pressure
     train_capacity: float = 1.0
@@ -66,6 +67,7 @@ class ShockProfile:
             'stride': self.stride,
             'n_embd': self.n_embd,
             'n_head': self.n_head,
+            'block_size': self.block_size,
             'train_capacity': self.train_capacity,
             'eval_capacity': self.eval_capacity,
             'use_aux_loss': self.aux_loss_weight > 0,
@@ -164,6 +166,39 @@ DIFFERENTIATED_8L = ShockProfile(
     eval_interval=15,
 )
 
+NANOMOE_PLUS = ShockProfile(
+    name="NANOMOE_PLUS",
+    description="16 experts, top-2, longer sequences, tight capacity. Messy routing.",
+
+    # Architecture - more experts = more routing ambiguity
+    n_layer=12,
+    n_exp=16,           # Was 4, now 16 for genuine competition
+    top_k=2,            # Top-2 routing = more interference
+    stride=1,           # All layers are MoE
+    n_embd=256,         # Richer representations
+    n_head=4,
+    block_size=256,     # Longer temporal dependencies
+
+    # Capacity pressure - force token drops
+    train_capacity=0.7,  # Tight: not all tokens get preferred expert
+    eval_capacity=1.2,   # Slightly relaxed for eval
+
+    # Weak load balancing - let natural collapse happen
+    aux_loss_weight=0.003,
+    router_z_loss_weight=0.0003,
+
+    # Sensitive controller
+    chrono_neff_threshold_ratio=0.85,
+    chrono_top2_warning=0.50,
+    chrono_lens_rank=8,
+
+    # Training dynamics
+    learning_rate=3e-4,
+    warmup_iters=30,
+    dropout=0.1,
+    eval_interval=20,
+)
+
 # The profile that achieves meaningful targeting correlation
 # without uniform collapse
 VALIDATED = DIFFERENTIATED_8L
@@ -178,6 +213,7 @@ PROFILES = {
     'moderate': MODERATE,
     'harsh': HARSH,
     'differentiated_8l': DIFFERENTIATED_8L,
+    'nanomoe_plus': NANOMOE_PLUS,
     'validated': VALIDATED,
 }
 

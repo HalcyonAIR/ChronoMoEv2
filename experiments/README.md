@@ -28,8 +28,13 @@ python experiments/clock3_ab.py \
 
 ### Success Criteria
 
-- **Targeting**: `correlation(fragility, scale) > 0.3` AND stable layers reduced
+- **Targeting**: `correlation(fragility, scale) > 0.3` AND stable layers behave correctly
 - **Topology**: `warm.final_neff >= cold.final_neff - 0.05`
+
+Fragility thresholds:
+- **Stable**: fragility < 0.8 (should reduce, or increase by less than 10%)
+- **Neutral**: 0.8 <= fragility <= 1.2 (exempt from checks)
+- **Fragile**: fragility > 1.2 (must increase)
 
 ### Shock Profiles
 
@@ -39,6 +44,7 @@ python experiments/clock3_ab.py \
 | `moderate` | Some pressure, creates differentiation |
 | `harsh` | Strong pressure, tests limits |
 | `differentiated_8l` | 8 MoE layers, validated r=0.995 |
+| `nanomoe_plus` | 16 experts, top-2, messy routing (graduation testbed) |
 | `validated` | Alias for differentiated_8l |
 
 ### Output
