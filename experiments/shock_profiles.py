@@ -168,7 +168,7 @@ DIFFERENTIATED_8L = ShockProfile(
 
 NANOMOE_PLUS = ShockProfile(
     name="NANOMOE_PLUS",
-    description="16 experts, top-2, longer sequences, tight capacity. Messy routing.",
+    description="16 experts, top-2. NOTE: Too stable - controller rarely triggers.",
 
     # Architecture - more experts = more routing ambiguity
     n_layer=12,
